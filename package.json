@@ -1,0 +1,68 @@
+{
+  "name": "my-ai-assistant",
+  "displayName": "My AI Assistant",
+  "description": "一个简单的AI助手插件，类似于Cline",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:my-ai-assistant.openPanel"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "my-ai-assistant.openPanel",
+        "title": "打开AI助手",
+        "category": "AI Assistant"
+      },
+      {
+        "command": "my-ai-assistant.askQuestion",
+        "title": "提问",
+        "category": "AI Assistant"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "my-ai-assistant.openPanel",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "editorTextFocus"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "my-ai-assistant.askQuestion",
+          "when": "editorHasSelection",
+          "group": "ai-assistant"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "my-ai-assistant.openPanel"
+        },
+        {
+          "command": "my-ai-assistant.askQuestion"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "@types/vscode": "^1.74.0",
+    "typescript": "^4.9.4"
+  },
+  "dependencies": {
+    "undici": "^7.16.0"
+  }
+}
