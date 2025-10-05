@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { request } from 'undici';
+import { request, fetch } from 'undici';
 
 export class AIAssistantPanel {
     public static currentPanel: AIAssistantPanel | undefined;
@@ -401,6 +401,35 @@ export class AIAssistantPanel {
                 case 'aiResponse':
                     updateAIResponse(message.response);
                     break;
+                case 'aiStreamStart': {
+                    // 启动一个空的 AI 消息容器
+                    const existing = document.getElementById('loading-message');
+                    if (!existing) {
+                        addMessage('ai', '');
+                        const el = messagesContainer.lastElementChild;
+                        if (el) el.id = 'loading-message';
+                    }
+                    window.__streamAccum = '';
+                    break;
+                }
+                case 'aiStreamDelta': {
+                    const delta = message.delta || '';
+                    window.__streamAccum = (window.__streamAccum || '') + delta;
+                    const loadingMessage = document.getElementById('loading-message');
+                    if (loadingMessage) {
+                        loadingMessage.innerHTML = '<strong>AI助手：</strong>' + (window.__streamAccum || '');
+                        loadingMessage.className = 'message ai-message';
+                    }
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                    break;
+                }
+                case 'aiStreamEnd': {
+                    const loadingMessage = document.getElementById('loading-message');
+                    if (loadingMessage) {
+                        loadingMessage.id = '';
+                    }
+                    break;
+                }
                 case 'contextUpdated':
                     contextInfo.textContent = '当前上下文：' + message.count + ' 项';
                     contextPreview.textContent = message.preview || '';
@@ -441,11 +470,8 @@ export class AIAssistantPanel {
     }
 
     private async _handleAskQuestion(question: string) {
-        // DeepSeek API 调用（示例：chat/completions 风格）。
-        // 注意：用户要求将 API Key 硬编码在代码中。
+        // DeepSeek API 流式调用（SSE）。
         const apiKey = 'sk-fb71877c22634e1997ada496f229209a';
-
-        // 你可以根据实际 DeepSeek 接口规范调整以下 endpoint 与 payload。
         const endpoint = 'https://api.deepseek.com/v1/chat/completions';
 
         try {
@@ -461,41 +487,63 @@ export class AIAssistantPanel {
                     { role: 'user', content: question }
                 ],
                 temperature: 0.7,
-                stream: false
-            };
+                stream: true
+            } as any;
 
-            const response = await request(endpoint, {
+            // 通知前端开始流式渲染
+            this._panel.webview.postMessage({ command: 'aiStreamStart' });
+
+            const res = await fetch(endpoint, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${apiKey}`
                 },
                 body: JSON.stringify(payload)
-            });
+            } as any);
 
-            if (response.statusCode < 200 || response.statusCode >= 300) {
-                const errorText = await response.body.text();
-                throw new Error(`DeepSeek API 请求失败：${response.statusCode} ${errorText}`);
+            if (!res.ok || !res.body) {
+                const errText = await (res as any).text?.().catch(() => '') || `status ${res.status}`;
+                throw new Error(`DeepSeek API 请求失败：${res.status} ${errText}`);
             }
 
-            const data: any = await response.body.json();
-            let answer = '';
-            // 兼容 OpenAI 风格返回：choices[0].message.content
-            if (data && Array.isArray(data.choices) && data.choices.length > 0) {
-                const choice = data.choices[0];
-                if (choice && choice.message && typeof choice.message.content === 'string') {
-                    answer = choice.message.content;
+            const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+
+                // 按行解析 SSE
+                let idx;
+                while ((idx = buffer.indexOf('\n')) !== -1) {
+                    const line = buffer.slice(0, idx).trim();
+                    buffer = buffer.slice(idx + 1);
+                    if (!line) continue;
+                    if (line.startsWith('data: ')) {
+                        const dataStr = line.slice('data: '.length).trim();
+                        if (dataStr === '[DONE]') {
+                            this._panel.webview.postMessage({ command: 'aiStreamEnd' });
+                            return;
+                        }
+                        try {
+                            const json = JSON.parse(dataStr);
+                            // 兼容 OpenAI 风格：choices[0].delta.content
+                            const delta = json?.choices?.[0]?.delta?.content || '';
+                            if (delta) {
+                                this._panel.webview.postMessage({ command: 'aiStreamDelta', delta });
+                            }
+                        } catch (e) {
+                            // 忽略不可解析的行
+                        }
+                    }
                 }
             }
 
-            if (!answer) {
-                answer = '未从 DeepSeek 返回有效回答，请检查接口与模型配置。';
-            }
-
-            this._panel.webview.postMessage({
-                command: 'aiResponse',
-                response: answer
-            });
+            // 结束（如果没有明确的 [DONE]）
+            this._panel.webview.postMessage({ command: 'aiStreamEnd' });
         } catch (err: any) {
             const message = err?.message ?? String(err);
             this._panel.webview.postMessage({
